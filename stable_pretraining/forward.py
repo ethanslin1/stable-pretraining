@@ -40,6 +40,7 @@ Example:
 from typing import Any
 
 import torch
+import torch.nn.functional as F
 
 from .callbacks.queue import find_or_create_queue_callback, OnlineQueue
 
@@ -1261,3 +1262,76 @@ def dinov2(self, batch: dict[str, Any], stage: str) -> dict[str, torch.Tensor]:
     )
 
     return out
+
+
+def densecl(self, batch, stage):
+    """DenseCL forward pass.
+
+    Expected batch:
+        batch["views"]: two augmented image batches, each [B, C, H, W]
+
+    The backbone must return spatial feature maps [B, C, H, W].
+    """
+    view1, view2 = batch["views"]
+
+    # Online encoder: gradients flow through this branch.
+    q_map = self.backbone(view1)
+    q_map2 = self.backbone(view2)
+
+    q_global = F.normalize(self.global_projector(q_map.mean(dim=(-2, -1))), dim=1)
+    q_global2 = F.normalize(self.global_projector(q_map2.mean(dim=(-2, -1))), dim=1)
+
+    # Momentum encoder supplies stop-gradient targets.
+    with torch.no_grad():
+        k_map = self.momentum_backbone(view2)
+        k_map2 = self.momentum_backbone(view1)
+
+        k_global = F.normalize(self.global_projector(k_map.mean(dim=(-2, -1))), dim=1)
+        k_global2 = F.normalize(self.global_projector(k_map2.mean(dim=(-2, -1))), dim=1)
+
+    temperature = self.temperature
+
+    # Symmetric global contrastive objective.
+    logits12 = q_global @ k_global.T / temperature
+    logits21 = q_global2 @ k_global2.T / temperature
+    labels = torch.arange(view1.shape[0], device=view1.device)
+
+    global_loss = (
+        F.cross_entropy(logits12, labels) + F.cross_entropy(logits21, labels)
+    ) / 2
+
+    # Project each spatial location into a local embedding.
+    q_dense = F.normalize(self.local_projector(q_map), dim=1)
+    k_dense = F.normalize(self.local_projector(k_map), dim=1)
+
+    # Match each online spatial feature to the most similar target
+    # spatial feature in the corresponding image.
+    b, d, h, w = q_dense.shape
+    q_flat = q_dense.flatten(2).transpose(1, 2)  # [B, HW, D]
+    k_flat = k_dense.flatten(2).transpose(1, 2)  # [B, HW, D]
+
+    with torch.no_grad():
+        matches = (q_flat.detach() @ k_flat.transpose(1, 2)).argmax(dim=-1)
+
+    # Dense contrastive logits: matched locations are positives;
+    # other spatial locations in the minibatch act as negatives.
+    q_all = q_flat.reshape(b * h * w, d)
+    k_all = k_flat.reshape(b * h * w, d)
+
+    matched_indices = (
+        torch.arange(b, device=view1.device)[:, None] * (h * w) + matches
+    ).reshape(-1)
+
+    dense_logits = q_all @ k_all.T / temperature
+    dense_loss = F.cross_entropy(dense_logits, matched_indices)
+
+    loss = global_loss + self.dense_loss_weight * dense_loss
+
+    # Scalar loss is the required training contract.
+    result = {"loss": loss}
+
+    # Expose representations for downstream evaluation callbacks.
+    if stage != "train":
+        result["embedding"] = q_global.detach()
+
+    return result
