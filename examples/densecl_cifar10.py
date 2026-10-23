@@ -51,7 +51,7 @@ from stable_pretraining.methods.densecl import DenseCL
 from stable_pretraining.manager import Manager
 from lightning.pytorch.loggers import CSVLogger
 
-SMOKE_TEST = True  # True = one tiny CPU pass to check wiring. Will set to False when running true training.
+SMOKE_TEST = False  # True = one tiny CPU pass to check wiring. Will set to False when running true training.
 FEATURE_DIM = 512  # ResNet-18 output channels (2048 for ResNet-50)
 
 
@@ -119,6 +119,16 @@ trainer = pl.Trainer(
     precision="16-mixed",
     logger=logger,
 )
+# trainer = pl.Trainer(
+#     max_epochs=100,
+#     max_steps=-1,
+#     fast_dev_run=False,
+#     accelerator="gpu",
+#     devices=1,
+#     callbacks=[linear_probe, knn_probe],
+#     precision="16-mixed",
+#     logger=logger,
+# )
 
 manager = Manager(
     trainer=trainer,
@@ -129,4 +139,12 @@ manager = Manager(
 print("Manager object:", type(manager))
 print("Is manager object callable:", callable(manager))
 
+print("SMOKE_TEST:", SMOKE_TEST)
+print("trainer.fast_dev_run:", trainer.fast_dev_run)
+print("trainer.max_steps:", trainer.max_steps)
+print("trainer.max_epochs:", trainer.max_epochs)
+print("trainer.limit_train_batches:", trainer.limit_train_batches)
+
 manager()
+
+# manager()
