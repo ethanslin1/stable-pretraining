@@ -134,6 +134,11 @@ manager = Manager(
     trainer=trainer,
     module=module,
     data=datamodule,
+    ckpt_path=(
+        "/oscar/home/eslin/.cache/stable-pretraining/runs/"
+        "20261023/190402/4557cc54edbe/checkpoints/last.ckpt"
+    ),
+    weights_only=False,
 )
 
 print("Manager object:", type(manager))
