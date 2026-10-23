@@ -2,13 +2,17 @@ import copy
 
 import torch
 import torch.nn as nn
-import lightning as L
 
+from stable_pretraining.module import Module
 from stable_pretraining.forward import densecl
+from stable_pretraining.losses.densecl_loss import DenseCLLoss
 
 
-class DenseCL(L.LightningModule):
-    """Dense Contrastive Learning for self-supervised representation learning."""
+class DenseCL(Module):
+    """Dense Contrastive Learning for self-supervised representation learning.
+
+    The backbone must return spatial feature maps [B, C, H, W].
+    """
 
     def __init__(
         self,
@@ -17,8 +21,8 @@ class DenseCL(L.LightningModule):
         projection_dim=128,
         temperature=0.2,
         dense_loss_weight=0.5,
-        momentum=0.999,
         learning_rate=1e-3,
+        momentum=0.999,
         weight_decay=1e-4,
     ):
         super().__init__()
@@ -26,7 +30,7 @@ class DenseCL(L.LightningModule):
         self.backbone = backbone
         self.momentum_backbone = copy.deepcopy(backbone)
 
-        # Freeze the target encoder; update it by EMA.
+        # Freeze the target encoder; it is updated by EMA only.
         for parameter in self.momentum_backbone.parameters():
             parameter.requires_grad = False
 
@@ -42,11 +46,24 @@ class DenseCL(L.LightningModule):
             nn.Conv2d(feature_dim, projection_dim, kernel_size=1),
         )
 
-        self.temperature = temperature
-        self.dense_loss_weight = dense_loss_weight
+        self.densecl_loss = DenseCLLoss(
+            temperature=temperature,
+            dense_loss_weight=dense_loss_weight,
+        )
+
         self.momentum = momentum
         self.learning_rate = learning_rate
         self.weight_decay = weight_decay
+
+        # Configure the optimizer using stable-pretraining's
+        # optimizer configuration system.
+        self.optim = {
+            "optimizer": {
+                "type": "AdamW",
+                "lr": self.learning_rate,
+                "weight_decay": self.weight_decay,
+            }
+        }
 
     @torch.no_grad()
     def update_momentum_encoder(self):
@@ -55,17 +72,11 @@ class DenseCL(L.LightningModule):
             self.backbone.parameters(),
             self.momentum_backbone.parameters(),
         ):
-            target.data.mul_(self.momentum).add_(online.data, alpha=1 - self.momentum)
+            target.data.mul_(self.momentum).add_(
+                online.data,
+                alpha=1 - self.momentum,
+            )
 
-    def forward(self, batch, stage="train"):
-        if stage == "train":
-            self.update_momentum_encoder()
-
+    def forward(self, batch, stage="fit"):
+        """Compute DenseCL outputs and loss for the requested stage."""
         return densecl(self, batch, stage)
-
-    def configure_optimizers(self):
-        return torch.optim.AdamW(
-            (parameter for parameter in self.parameters() if parameter.requires_grad),
-            lr=self.learning_rate,
-            weight_decay=self.weight_decay,
-        )
